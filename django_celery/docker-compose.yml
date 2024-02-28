@@ -1,0 +1,79 @@
+version: "3"
+
+services:
+  redis:
+    image: redis:7.2.4-alpine3.19
+    ports:
+      - 6379:6379
+  
+  postgres:
+    image: postgres:13.14-alpine3.19
+    restart: always
+    ports:
+      - "5444:5432"
+    env_file: .env
+    environment:
+      - POSTGRES_USER=$POSTGRES_USER
+      - POSTGRES_PASSWORD=$POSTGRES_PASSWORD
+      - POSTGRES_DB=$POSTGRES_DB
+    # volumes:
+      # - postgresql_volume:/var/lib/postgresql/data
+
+  django:
+    build:
+      context: celery2
+      dockerfile: Dockerfile
+    command: sh -c "python manage.py makemigrations && python manage.py migrate --noinput && python manage.py runserver 0.0.0.0:8000"
+    ports:
+      - 8080:8000
+    env_file: .env
+    environment:
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+    depends_on:
+      - redis
+      - postgres
+
+    
+  worker:
+    build:
+      context: celery2
+      dockerfile: Dockerfile
+    command: python -m celery -A celery2:celery_app worker
+    env_file: .env
+    environment:
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+    depends_on:
+      - redis
+      - postgres
+  
+  flower:
+    build:
+      context: celery2
+      dockerfile: Dockerfile
+    command: python -m celery -A celery2 flower --port=5555
+    ports:
+      - "5555:5555"
+    env_file: .env
+    environment:
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+    depends_on:
+      - redis
+      - postgres
+
+
+
+# volumes:
+#   postgresql_volume:
+#     name: postgresql_volume

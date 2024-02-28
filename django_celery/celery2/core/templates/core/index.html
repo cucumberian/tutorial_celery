@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+</head>
+<body>
+    <form action="{% url 'add_task' %}" mathod="POST">
+        {% csrf_token %}
+        <input type="text" name="value" placeholder="some value">
+        <button type="submit">Добавить задачу</button>
+    </form>
+</body>
+</html>
+
+<script>
+    const form = document.forms[0];
+    form.addEventListener('submit', formSubmitHandler);
+
+    async function formSubmitHandler(event) {
+        event.stopPropagation();
+        event.preventDefault();
+        const formData = new FormData(event.target);
+        const data = Object.fromEntries(formData);
+        console.log("data =", data);
+        const response = await fetch('/add_task/', {
+            "method": "POST",
+            body: formData,
+        });
+        console.log(response);
+        const responseJson = await response.json();
+        console.log("RESPONSE:", responseJson);
+    }
+</script>
