@@ -14,11 +14,12 @@ Celery это отдельная очередь задач, которая мо�
 pip3 install django
 ...
 pip3 install celery
+pip3 install redis
 ```
 Теперь можно запустить worker командой `celery worker`. Но получим сообщение об ошибке, что celery не может работать с брокером сообщений.
 Celery будет безуспешно пытаться подключиться к локальному хосту по протоколу amqp - advanced message queuing protocol (https://en.wikipedia.org/wiki/Advanced_Message_Queuing_Protocol).
 
-#### Redis
+### Redis
 Установим redis-server
 ```shell
 sudo apt update
@@ -30,7 +31,6 @@ sudo apt install redis
 ```shell
 redis-server
 ```
-
 Проверить работает ли redis
 ```shell
 ps aux | grep redis
@@ -55,18 +55,10 @@ pip install flower
 ```
 Т.е. нам нужен редис сервер, как отдельное приложение и пакет для питоновских программ для работы с ним.
 
-### Подключение воркера
-Попробуем снова запустить воркера для нашего джанго приложения
-```shell
-python -m celery -A django_celery worker
-```
-, где `django_celery` - название инстанса celery из файла `celery.py`.
-Опять получим ошибку, т.к. в нашем приложении еще нет точки доступа для celery. Исправим это.
-
 ## Добавление celery у джанго проекту
 Создадим файл `celery.py` в папке корневого приложенияЮ рядом c `settings.py`.
 ```python
-# project_name/celery.py
+# django_celery/celery.py
 import os
 from celery import Celery
 
@@ -74,7 +66,7 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "django_celery.settings")
 
 app = Celery("django_celery")
 # app = Celery("hello", backend="redis://localhost:6379", broker="pyamqp://quest@127.0.0.1:6379/")
-app.config_from_object("django.conf:settings", namespace="CELERY")
+app.config_from_object("django.conf.settings", namespace="CELERY")
 app.autodiscover_tasks()
 
 
@@ -86,7 +78,7 @@ def add(x, y):
 
 Затем создаём экземпляр приложения Celery и передаём внутрь имя нашего приложения (главного модуля).
 
-Далее мы задаем путь до файла настроек и имя неймспейса с настройками celery. В файле конфигурации `settings.py` все настройки начинающиеся с `CELERY_` будут прочтены этим приложение. При желании можно определить и другой файл конфигурации.
+Далее мы задаем путь до файла настроек и имя неймспейса с настройками celery. В файле конфигурации `settings.py` все настройки начинающиеся с `CELERY_` будут прочтены этим приложением. При желании можно определить и другой файл конфигурации.
 
 Через автодисковер мы говорим приложению celery искать задачи в каждом приложении джанго.
 
@@ -99,7 +91,7 @@ CELERY_BROKER_URL = "redis://localhost:6379/0"
 CELERY_RESULT_BACKEND = "redis://localhost:6379/0"
 ```
 Данные строки дают инстансу celery достаточно информации, чтобы понять куда отправлять сообщения и куда записывать результат.
-Заметим, что начинаются эти строки на имя `CELERY_`, где название `CELERY` задается как namespace в файле celery.py в строке `app.config_from_object("django.conf:settings", namespace="CELERY")`.
+Заметим, что начинаются эти строки на имя `CELERY_`, где название `CELERY` задается как namespace в файле `celery.py` в строке `app.config_from_object("django.conf:settings", namespace="CELERY")`.
 
 Добавим celery.app в загрузку модуля через файл `main_app/__init__.py`:
 ```python
@@ -121,14 +113,14 @@ __all__ = ("celery_app", )
 
 - Запускаем сервер redis  `redis-server` если еще не запущен как сервис или в докере
 - запускаем джанго `python manage.py runserver`
-- запускаем воркер `python -m celery -A django_celery  worker --loglevel=INFO`
+- запускаем воркер `python -m celery -A django_celery worker --loglevel=INFO`
     При запуске воркера передаём celery имя нашего джанго модуля в котором есть инстанс Celery.
     - `-A` = `--app=`
     - `-l` = `--loglevel=`
     - `-b` = `--broker=`
     Можно явно указать инстанс Celery:
     ```shell
-    python -m celery --app=django_celery:celery_app --loglevel=INFO
+    python -m celery --app=django_celery:celery_app worker --loglevel=INFO
     ```
 - запускаем flower на порту 5555
 ```shell
@@ -374,3 +366,51 @@ volumes:
 ```shell
 docker-compose up -d --build --scale worker=3
 ```
+
+## Celery для произвольного проекта
+
+Задача - запустить асинхронный расчет хэша от строки.
+Т.к. задача асинхронная, то выполнять её можно в отдельном процессе.
+А в главной программе мы будем асинхронно ожидать выполнения этого процесса через `asyncio.sleep`.
+
+1. Создаем экземпляр celery приложения в файле `celery_app.py`
+```python
+import time
+import hashlib
+from celery import Celery
+
+celery_app = Celery(
+    "tasks", broker="redis://localhost:6379/0", backend="redis://localhost:6379/0"
+)
+
+celery_app.conf.broker_url = Config.CELERY_BROKER_URL
+celery_app.conf.result_backend = Config.CELERY_RESULT_BACKEND
+celery_app.conf.update(result_expires=3600)
+
+@celery_app.task
+def calc_hash(string: str) -> str:
+    time.sleep(10)
+    hash_str = hashlib.sha256(string.encode()).hexdigest()
+    return hash_str
+```
+
+2. Используем эту задачу в коде:
+```python
+import asyncio
+from celery_app import celery_hash
+
+async def calc_hash(string: str) -> str:
+  """
+  Асинхронный расчёт хэша в отдельном процессе Celery воркера
+  """
+  task = celery_hash.delay(string=string)
+  while not task.ready():
+    asyncio.sleep(0.1)
+  return task.result
+```
+3. Запускаем воркера
+```shell
+celery -A celery_app worker --loglevel=INFO
+```
+
+4. Запускаем наше приложение
